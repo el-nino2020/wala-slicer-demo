@@ -1,5 +1,3 @@
-package org.elnino;
-
 import com.ibm.wala.classLoader.Language;
 import com.ibm.wala.classLoader.ShrikeBTMethod;
 import com.ibm.wala.core.tests.callGraph.CallGraphTestUtil;
