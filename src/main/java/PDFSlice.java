@@ -34,8 +34,12 @@ import com.ibm.wala.util.io.CommandLine;
 import com.ibm.wala.util.viz.DotUtil;
 import com.ibm.wala.util.viz.NodeDecorator;
 
+import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileWriter;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.Objects;
@@ -62,7 +66,7 @@ public class PDFSlice {
     /**
      * Usage: PDFSlice -appJar [jar file name] -mainClass [main class] -srcCaller [method name]
      * -srcCallee [method name] -dd [data dependence options] -cd [control dependence options] -dir
-     * [forward|backward]
+     * [forward|backward] -outputFile [file path] -printSlice [true|false]
      *
      * <ul>
      *   <li>"jar file name" should be something like "c:/temp/testdata/java_cup.jar"
@@ -73,6 +77,8 @@ public class PDFSlice {
      *       "no_heap", "no_base_no_heap_no_cast", or "none".
      *   <li>"control dependence options" can be "full" or "none"
      *   <li>the -dir argument tells whether to compute a forwards or backwards slice.
+     *   <li> outputFile: 存放 slice 的文件
+     *   <li> printSlice： 是否将 slice 打印至命令行
      * </ul>
      *
      * @see com.ibm.wala.ipa.slicer.Slicer.DataDependenceOptions
@@ -91,8 +97,15 @@ public class PDFSlice {
         // validate that the command-line has the expected format
         validateCommandLine(p);
 
+        if (p.getProperty("printSlice") == null) {
+            System.err.println("-printSlice is null, use true as default");
+            p.setProperty("printSlice", "true");
+        }
+
         // run the applications
-        return run(p.getProperty("appJar"), p.getProperty("mainClass"), p.getProperty("srcCaller"), p.getProperty("srcCallee"), goBackward(p), PDFSDG.getDataDependenceOptions(p), PDFSDG.getControlDependenceOptions(p));
+        return run(p.getProperty("appJar"), p.getProperty("mainClass"), p.getProperty("srcCaller"),
+                p.getProperty("srcCallee"), goBackward(p), PDFSDG.getDataDependenceOptions(p), PDFSDG.getControlDependenceOptions(p),
+                p.getProperty("outputFile"), Boolean.parseBoolean(p.getProperty("printSlice")));
     }
 
     /**
@@ -115,24 +128,36 @@ public class PDFSlice {
      * @param cOptions   options controlling control dependence
      * @return a Process running the PDF viewer to visualize the dot'ted representation of the slice
      */
-    public static Process run(String appJar, String mainClass, String srcCaller, String srcCallee, boolean goBackward, DataDependenceOptions dOptions, ControlDependenceOptions cOptions) throws IllegalArgumentException, CancelException, IOException {
+    public static Process run(String appJar, String mainClass, String srcCaller, String srcCallee, boolean goBackward,
+                              DataDependenceOptions dOptions, ControlDependenceOptions cOptions,
+                              String outputFile, boolean printSlice) throws IllegalArgumentException, CancelException, IOException {
+        if (outputFile == null) {
+            System.err.println("-outputFile is null, the slice will not be saved into a file.");
+        }
+
         try {
             // create an analysis scope representing the appJar as a J2SE application
-            AnalysisScope scope = AnalysisScopeReader.instance.makeJavaBinaryAnalysisScope(appJar, new FileProvider().getFile(CallGraphTestUtil.REGRESSION_EXCLUSIONS));
-
+            AnalysisScope scope = AnalysisScopeReader.instance.makeJavaBinaryAnalysisScope(appJar,
+                    new FileProvider().getFile(CallGraphTestUtil.REGRESSION_EXCLUSIONS));
+//            AnalysisScope scope = AnalysisScopeReader.instance.makeJavaBinaryAnalysisScope(appJar,
+//                    new FileProvider().getFile("src/main/resources/RegressionExclusions.txt"));
             // build a class hierarchy, call graph, and system dependence graph
             ClassHierarchy cha = ClassHierarchyFactory.make(scope);
             Iterable<Entrypoint> entryPoints = com.ibm.wala.ipa.callgraph.impl.Util.makeMainEntrypoints(cha, mainClass);
             AnalysisOptions options = CallGraphTestUtil.makeAnalysisOptions(scope, entryPoints);
-            CallGraphBuilder<InstanceKey> builder = Util.makeVanillaZeroOneCFABuilder(Language.JAVA, options, new AnalysisCacheImpl(), cha);
-//            CallGraphBuilder builder = Util.makeZeroOneCFABuilder(options, new AnalysisCache(), cha, scope);
+            options.setReflectionOptions(AnalysisOptions.ReflectionOptions.NONE);
+
+//            CallGraphBuilder<InstanceKey> builder = Util.makeVanillaZeroOneCFABuilder(Language.JAVA, options, new AnalysisCacheImpl(), cha);
+            CallGraphBuilder<InstanceKey> builder = Util.makeZeroOneCFABuilder(Language.JAVA, options, new AnalysisCacheImpl(), cha);
+//            CallGraphBuilder<InstanceKey> builder = Util.makeZeroCFABuilder(Language.JAVA, options, new AnalysisCacheImpl(), cha);
+
             CallGraph cg = builder.makeCallGraph(options, null);
-            SDG<InstanceKey> sdg = new SDG<>(cg, builder.getPointerAnalysis(), dOptions, cOptions);
 
             // find the call statement of interest
             CGNode callerNode = CallGraphSearchUtil.findMethod(cg, srcCaller);
             Statement s = SlicerUtil.findCallTo(callerNode, srcCallee);
-//            System.out.println("Statement: " + s);
+            System.out.println("Statement: " + s);
+            System.out.println("Line of this statement: " + mapToSourceCodeLine(s));
 
             // compute the slice as a collection of statements
             final Collection<Statement> slice;
@@ -147,9 +172,11 @@ public class PDFSlice {
                 slice = Slicer.computeForwardSlice(s, cg, pointerAnalysis, dOptions, cOptions);
             }
 //            SlicerUtil.dumpSlice(slice);
-            printSourceCodeLines(slice, mainClass);
+            printSourceCodeLines(slice, mainClass, outputFile, printSlice);
             if (true)
                 return null;
+
+            SDG<InstanceKey> sdg = new SDG<>(cg, builder.getPointerAnalysis(), dOptions, cOptions);
 
             // create a view of the SDG restricted to nodes in the slice
             Graph<Statement> g = pruneSDG(sdg, slice);
@@ -181,32 +208,53 @@ public class PDFSlice {
         }
     }
 
-    private static void printSourceCodeLines(Collection<Statement> slice, String mainClass) {
+    private static int mapToSourceCodeLine(Statement s) {
+        if (s.getKind() != Statement.Kind.NORMAL) {
+            return -1;
+        }
+        try {
+            int instructionIndex = ((NormalStatement) s).getInstructionIndex();
+            return s.getNode().getMethod().getLineNumber(((ShrikeBTMethod) s.getNode().getMethod()).getBytecodeIndex(instructionIndex));
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    private static void printSourceCodeLines(Collection<Statement> slice, String mainClass, String outputFile, boolean printSlice) {
         LinkedHashSet<String> set = new LinkedHashSet<>();
         for (Statement s : slice) {
             if (s.getKind() == Statement.Kind.NORMAL) { // ignore special kinds of statements
                 // 只要源码
-                if (!Objects.equals(s.getNode().getMethod().getDeclaringClass().getReference().getName().toString(), mainClass)) {
+//                if (!Objects.equals(s.getNode().getMethod().getDeclaringClass().getReference().getName().toString(), mainClass)) {
+//                    continue;
+//                }
+                if (!Objects.equals(s.getNode().getMethod().getDeclaringClass().getClassLoader().toString(), "Application")) {
                     continue;
                 }
-
-                int bcIndex, instructionIndex = ((NormalStatement) s).getInstructionIndex();
-                try {
-                    bcIndex = ((ShrikeBTMethod) s.getNode().getMethod()).getBytecodeIndex(instructionIndex);
-                    try {
-                        int src_line_number = s.getNode().getMethod().getLineNumber(bcIndex);
-                        set.add(String.format("%s:%d", s.getNode().getMethod(), src_line_number));
-                    } catch (Exception e) {
-                        System.out.println("Bytecode index no good");
-                        System.out.println(e.getMessage());
-                    }
-                } catch (Exception e) {
-                    System.out.println("it's probably not a BT method (e.g. it's a fakeroot method)");
-                    System.out.println(e.getMessage());
-                }
+                int srcLineNumber = mapToSourceCodeLine(s);
+                set.add(String.format("%s:%d", s.getNode().getMethod(), srcLineNumber));
             }
         }
-        set.forEach(System.out::println);
+        if (printSlice) {
+            set.forEach(System.out::println);
+        }
+        if (outputFile == null) {
+            return;
+        }
+
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(outputFile, StandardCharsets.UTF_8, true))) {
+            writer.write("=======================================\n");
+            writer.write(LocalDateTime.now().toString());
+            writer.newLine();
+            writer.newLine();
+
+            for (String s : set) {
+                writer.write(s);
+                writer.newLine();
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
 
 
     }
