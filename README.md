@@ -64,5 +64,5 @@ mvn -Dmaven.test.skip=true clean package
 
 ## 运行
 ```shell
-java -cp ./target/wala-slicer-demo-1.0-SNAPSHOT.jar PDFSlice 参数列表
+java -cp ./target/wala-slicer-demo-1.0-SNAPSHOT-jar-with-dependencies.jar PDFSlice 参数列表
 ```
