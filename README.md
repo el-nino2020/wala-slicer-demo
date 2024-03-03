@@ -2,6 +2,13 @@
 
 [WALA](https://github.com/wala/WALA)
 
+## 说明
+
+https://github.com/el-nino2020/wala-joana-demo
+
+这是别人已有的一个 wala slicer 的例子。我怀疑 `DataDependenceOptions` 根本不可能选择分析 heap，因为跑不出来。
+而用了 `no_heap` 参数，就可以立刻跑出来。。。
+
 ## 环境
 - JDK 11
 - Maven 3.8.4
@@ -9,10 +16,21 @@
 ## 参数例子
 
 ```shell
-java PDFSlice -appJar .\src\main\resources\javaslicer-bench2-inter-procedural-1.0.0.jar -mainClass LBench -srcCaller main -srcCallee println -dd no_heap -cd full -dir backward -outputFile output.txt -printSlice true
+java PDFSlice -appJar .\src\main\resources\javaslicer-bench2-inter-procedural-1.0.0.jar -mainClass LBench -srcCaller main -srcCallee println -dd no_heap -cd full -dir backward -outputFile output.txt -printSlice true -jUnitEntry false -junitVersion 3 -targetPackageName com.fasterxml.jackson.core.util -targetSimpleClassName TestTextBuffer -targetMethodName testExpand -useExclusionFile true
 ```
 
-1️⃣`-dd` 参数：
+### `-jUnitEntry`
+
+- 默认就是 `false`，不写也行
+- 如果设置为 `true`，则：
+  - `-appJar` 应该设置为 classpath
+  - `mainClass` 此时无用
+  - `junitVersion`: `4` or `3`
+    - 如果是 `3`， 需要指定 `-targetPackageName`、 `-targetSimpleClassName` 和 `-targetMethodName`
+    - `4` 的话不需要
+
+
+### `-dd` 参数：
 
 ```java
 public enum DataDependenceOptions {
@@ -33,7 +51,7 @@ public enum DataDependenceOptions {
 }
 ```
 
-2️⃣️`-cd` 参数：
+### `-cd` 参数：
 ```java
 public enum ControlDependenceOptions {
     /** track all control dependencies */

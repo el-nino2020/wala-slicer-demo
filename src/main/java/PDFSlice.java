@@ -3,6 +3,7 @@ import com.ibm.wala.classLoader.ShrikeBTMethod;
 import com.ibm.wala.core.tests.callGraph.CallGraphTestUtil;
 import com.ibm.wala.core.util.config.AnalysisScopeReader;
 import com.ibm.wala.core.util.io.FileProvider;
+import com.ibm.wala.core.util.scope.JUnitEntryPoints;
 import com.ibm.wala.core.viz.PDFViewUtil;
 import com.ibm.wala.examples.drivers.PDFSDG;
 import com.ibm.wala.examples.drivers.PDFTypeHierarchy;
@@ -101,11 +102,17 @@ public class PDFSlice {
             System.err.println("-printSlice is null, use true as default");
             p.setProperty("printSlice", "true");
         }
+        if (p.getProperty("jUnitEntry") == null) {
+            System.err.println("-printSlice is null, use false as default");
+            p.setProperty("jUnitEntry", "false");
+        }
 
         // run the applications
-        return run(p.getProperty("appJar"), p.getProperty("mainClass"), p.getProperty("srcCaller"),
-                p.getProperty("srcCallee"), goBackward(p), PDFSDG.getDataDependenceOptions(p), PDFSDG.getControlDependenceOptions(p),
-                p.getProperty("outputFile"), Boolean.parseBoolean(p.getProperty("printSlice")));
+        return run(p.getProperty("appJar"), p.getProperty("mainClass"), p.getProperty("srcCaller"), p.getProperty("srcCallee"), goBackward(p), PDFSDG.getDataDependenceOptions(p), PDFSDG.getControlDependenceOptions(p),
+                p.getProperty("outputFile"),
+                Boolean.parseBoolean(p.getProperty("printSlice")),
+                Boolean.parseBoolean(p.getProperty("jUnitEntry")),
+                p);
     }
 
     /**
@@ -128,22 +135,41 @@ public class PDFSlice {
      * @param cOptions   options controlling control dependence
      * @return a Process running the PDF viewer to visualize the dot'ted representation of the slice
      */
-    public static Process run(String appJar, String mainClass, String srcCaller, String srcCallee, boolean goBackward,
-                              DataDependenceOptions dOptions, ControlDependenceOptions cOptions,
-                              String outputFile, boolean printSlice) throws IllegalArgumentException, CancelException, IOException {
+    public static Process run(String appJar, String mainClass, String srcCaller, String srcCallee, boolean goBackward, DataDependenceOptions dOptions, ControlDependenceOptions cOptions, String outputFile, boolean printSlice, boolean jUnitEntry, Properties p) throws IllegalArgumentException, CancelException, IOException {
         if (outputFile == null) {
             System.err.println("-outputFile is null, the slice will not be saved into a file.");
         }
 
         try {
+            long time = System.currentTimeMillis();
             // create an analysis scope representing the appJar as a J2SE application
-            AnalysisScope scope = AnalysisScopeReader.instance.makeJavaBinaryAnalysisScope(appJar,
-                    new FileProvider().getFile(CallGraphTestUtil.REGRESSION_EXCLUSIONS));
+            File exclusionFile = null;
+            if (Boolean.parseBoolean(p.getProperty("useExclusionFile", "true"))) {
+                exclusionFile = new FileProvider().getFile(CallGraphTestUtil.REGRESSION_EXCLUSIONS);
+            }
+
+            AnalysisScope scope = AnalysisScopeReader.instance.makeJavaBinaryAnalysisScope(appJar, exclusionFile);
 //            AnalysisScope scope = AnalysisScopeReader.instance.makeJavaBinaryAnalysisScope(appJar,
-//                    new FileProvider().getFile("src/main/resources/RegressionExclusions.txt"));
+//                    new FileProvider().getFile("src/main/resources/CustomRegressionExclusions.txt"));
             // build a class hierarchy, call graph, and system dependence graph
             ClassHierarchy cha = ClassHierarchyFactory.make(scope);
-            Iterable<Entrypoint> entryPoints = com.ibm.wala.ipa.callgraph.impl.Util.makeMainEntrypoints(cha, mainClass);
+            Iterable<Entrypoint> entryPoints;
+            if (jUnitEntry) {
+
+                String junitVersion = p.getProperty("junitVersion");
+                switch (junitVersion) {
+                    case "4":
+                        entryPoints = JUnitEntryPoints.make(cha);
+                        break;
+                    case "3":
+                        entryPoints = JUnitEntryPoints.makeOne(cha, p.getProperty("targetPackageName"), p.getProperty("targetSimpleClassName"), p.getProperty("targetMethodName"));
+                        break;
+                    default:
+                        throw new RuntimeException();
+                }
+            } else {
+                entryPoints = com.ibm.wala.ipa.callgraph.impl.Util.makeMainEntrypoints(cha, mainClass);
+            }
             AnalysisOptions options = CallGraphTestUtil.makeAnalysisOptions(scope, entryPoints);
             options.setReflectionOptions(AnalysisOptions.ReflectionOptions.NONE);
 
@@ -158,12 +184,16 @@ public class PDFSlice {
             Statement s = SlicerUtil.findCallTo(callerNode, srcCallee);
             System.out.println("Statement: " + s);
             System.out.println("Line of this statement: " + mapToSourceCodeLine(s));
+            System.out.format("build graph time: %.3f s\n", (System.currentTimeMillis() - time) / 1000.0);
+            time = System.currentTimeMillis();
 
             // compute the slice as a collection of statements
             final Collection<Statement> slice;
             if (goBackward) {
                 final PointerAnalysis<InstanceKey> pointerAnalysis = builder.getPointerAnalysis();
                 slice = Slicer.computeBackwardSlice(s, cg, pointerAnalysis, dOptions, cOptions);
+                System.out.format("slice time: %.3f s\n", (System.currentTimeMillis() - time) / 1000.0);
+                time = System.currentTimeMillis();
             } else {
                 // for forward slices ... we actually slice from the return value of
                 // calls.
@@ -173,8 +203,7 @@ public class PDFSlice {
             }
 //            SlicerUtil.dumpSlice(slice);
             printSourceCodeLines(slice, mainClass, outputFile, printSlice);
-            if (true)
-                return null;
+            if (true) return null;
 
             SDG<InstanceKey> sdg = new SDG<>(cg, builder.getPointerAnalysis(), dOptions, cOptions);
 
@@ -183,8 +212,9 @@ public class PDFSlice {
 
             sanityCheck(slice, g);
 
+
             // load Properties from standard WALA and the WALA examples project
-            Properties p = null;
+            p = null;
             try {
                 p = WalaExamplesProperties.loadProperties();
                 p.putAll(WalaProperties.loadProperties());
@@ -235,6 +265,7 @@ public class PDFSlice {
                 set.add(String.format("%s:%d", s.getNode().getMethod(), srcLineNumber));
             }
         }
+        System.out.println("LOC: " + set.size());
         if (printSlice) {
             set.forEach(System.out::println);
         }
