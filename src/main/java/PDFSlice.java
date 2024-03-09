@@ -3,7 +3,7 @@ import com.ibm.wala.classLoader.ShrikeBTMethod;
 import com.ibm.wala.core.tests.callGraph.CallGraphTestUtil;
 import com.ibm.wala.core.util.config.AnalysisScopeReader;
 import com.ibm.wala.core.util.io.FileProvider;
-import com.ibm.wala.core.util.scope.JUnitEntryPoints;
+import com.ibm.wala.core.util.strings.Atom;
 import com.ibm.wala.core.viz.PDFViewUtil;
 import com.ibm.wala.examples.drivers.PDFSDG;
 import com.ibm.wala.examples.drivers.PDFTypeHierarchy;
@@ -12,7 +12,6 @@ import com.ibm.wala.ipa.callgraph.*;
 import com.ibm.wala.ipa.callgraph.impl.Util;
 import com.ibm.wala.ipa.callgraph.propagation.InstanceKey;
 import com.ibm.wala.ipa.callgraph.propagation.PointerAnalysis;
-import com.ibm.wala.ipa.callgraph.util.CallGraphSearchUtil;
 import com.ibm.wala.ipa.cha.ClassHierarchy;
 import com.ibm.wala.ipa.cha.ClassHierarchyFactory;
 import com.ibm.wala.ipa.slicer.*;
@@ -122,6 +121,22 @@ public class PDFSlice {
         return !p.getProperty("dir", "backward").equals("forward");
     }
 
+
+    public static CGNode findMethod(CallGraph cg, String name, boolean printAllMethod) {
+        Atom a = Atom.findOrCreateUnicodeAtom(name);
+        for (CGNode n : cg) {
+            if (printAllMethod) {
+                System.out.println(n.getMethod().getDeclaringClass().toString() + ":" + n.getMethod().getName());
+            }
+            if (n.getMethod().getName().equals(a)) {
+                return n;
+            }
+        }
+        System.err.println("call graph " + cg);
+        Assertions.UNREACHABLE("failed to find method " + name);
+        return null;
+    }
+
     /**
      * Compute a slice from a call statements, dot it, and fire off the PDF viewer to visualize the
      * result
@@ -140,12 +155,28 @@ public class PDFSlice {
             System.err.println("-outputFile is null, the slice will not be saved into a file.");
         }
 
+        // java 的类名是 abc.def.Main，但是 wala 的规范是 labc/def/Main
+        // 先转化一下
+        if (!mainClass.startsWith("L")) {
+            mainClass = 'L' + mainClass;
+        }
+        mainClass = mainClass.replace('.', '/');
+        if (printSlice) {
+            System.out.println("mainClass: " + mainClass);
+        }
+
         try {
             long time = System.currentTimeMillis();
             // create an analysis scope representing the appJar as a J2SE application
             File exclusionFile = null;
             if (Boolean.parseBoolean(p.getProperty("useExclusionFile", "true"))) {
-                exclusionFile = new FileProvider().getFile(CallGraphTestUtil.REGRESSION_EXCLUSIONS);
+                if (Boolean.parseBoolean(p.getProperty("useDefaultExclusionFile", "true"))) {
+                    exclusionFile = new FileProvider().getFile(CallGraphTestUtil.REGRESSION_EXCLUSIONS);
+                    System.out.println("using default exclusion file");
+                } else {
+                    exclusionFile = new FileProvider().getFile(p.getProperty("CustomExclusionFilePath"));
+                    System.out.println("using custom exclusion file");
+                }
             }
 
             AnalysisScope scope = AnalysisScopeReader.instance.makeJavaBinaryAnalysisScope(appJar, exclusionFile);
@@ -159,10 +190,10 @@ public class PDFSlice {
                 String junitVersion = p.getProperty("junitVersion");
                 switch (junitVersion) {
                     case "4":
-                        entryPoints = JUnitEntryPoints.make(cha);
+                        entryPoints = MyJUnitEntryPoints.make(cha, mainClass, printSlice);
                         break;
                     case "3":
-                        entryPoints = JUnitEntryPoints.makeOne(cha, p.getProperty("targetPackageName"), p.getProperty("targetSimpleClassName"), p.getProperty("targetMethodName"));
+                        entryPoints = MyJUnitEntryPoints.makeOne(cha, p.getProperty("targetPackageName"), p.getProperty("targetSimpleClassName"), p.getProperty("targetMethodName"));
                         break;
                     default:
                         throw new RuntimeException();
@@ -180,7 +211,8 @@ public class PDFSlice {
             CallGraph cg = builder.makeCallGraph(options, null);
 
             // find the call statement of interest
-            CGNode callerNode = CallGraphSearchUtil.findMethod(cg, srcCaller);
+//            CGNode callerNode = CallGraphSearchUtil.findMethod(cg, srcCaller);
+            CGNode callerNode = findMethod(cg, srcCaller, printSlice);
             Statement s = SlicerUtil.findCallTo(callerNode, srcCallee);
             System.out.println("Statement: " + s);
             System.out.println("Line of this statement: " + mapToSourceCodeLine(s));

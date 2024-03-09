@@ -16,7 +16,7 @@ https://github.com/el-nino2020/wala-joana-demo
 ## 参数例子
 
 ```shell
-java PDFSlice -appJar .\src\main\resources\javaslicer-bench2-inter-procedural-1.0.0.jar -mainClass LBench -srcCaller main -srcCallee println -dd no_heap -cd full -dir backward -outputFile output.txt -printSlice true -jUnitEntry false -junitVersion 3 -targetPackageName com.fasterxml.jackson.core.util -targetSimpleClassName TestTextBuffer -targetMethodName testExpand -useExclusionFile true
+java PDFSlice -appJar .\src\main\resources\javaslicer-bench2-inter-procedural-1.0.0.jar -mainClass LBench -srcCaller main -srcCallee println -dd no_heap -cd full -dir backward -outputFile output.txt -printSlice true -jUnitEntry false -junitVersion 3 -targetPackageName com.fasterxml.jackson.core.util -targetSimpleClassName TestTextBuffer -targetMethodName testExpand -useExclusionFile true -CustomExclusionFilePath CustomRegressionExclusions.txt
 ```
 
 ### `-jUnitEntry`
